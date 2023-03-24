@@ -8,14 +8,74 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
+library(tidyverse)
+library(Seurat)
+library(liana)
+
+#library(devtools)
+#remotes::install_github('saezlab/liana@0.1.7')
 
 ```
+
+## Overview
+
+
 
 ## load Data
 
 
-```{r}
-bone_counts <- read.table()
+```{r, include=FALSE}
+
+bone_metadata <- read.table("./../local/bone_metadata.tsv", sep = "\t", header = TRUE)
+
+## only from 2D
+#bone_metadata <- bone_metadata %>% dplyr::filter(Condition == "2D")
+bone_counts <- read_delim(file =  "./../local/bone_tximport_lengthScaledTPM.tsv", delim = "\t", col_names = TRUE) #%>% tibble::column_to_rownames("gene")
+
+rapalink_metadata <- read.table("./../local/rapalink_metadata.txt", sep = "\t", header = TRUE)
+rapalink_counts <- read_delim(file =  "./../local/rapalink_tximport_lengthScaledTPM.tsv", delim = "\t", col_names = TRUE)# %>% tibble::column_to_rownames("gene")
+
+
+## combine count tables, (in that case no NA produced!)
+counts <- bone_counts %>% full_join(rapalink_counts, by = "gene") %>% column_to_rownames("gene")
+
+## unify metadata
+m_1 <- bone_metadata %>% dplyr::filter(Condition == "2D")%>% dplyr::rename(sample = GS_Code) %>% dplyr::select("sample", "Timecourse", "Type", "Batch" ) %>% mutate(treatment = NA)  %>% mutate(dataset = "bone")
+m_2 <- rapalink_metadata %>% dplyr::rename(sample = GenomeScanID, treatment = Treatment, Type = Model) %>% mutate(Timecourse = NA, Batch = NA) %>% dplyr::select("sample", "Timecourse", "Type", "Batch", "treatment" ) %>% mutate(dataset = "rapalink")
+
+metadata <- rbind(m_1, m_2)
+# reorder metadata based on count matrix
+
+metadata <- metadata[match(metadata$sample, colnames(counts)),]
+rownames(metadata) <- metadata$sample
 
 ```
 
+## create Seurat object
+
+```{r}
+sobj <- CreateSeuratObject(counts = counts, project = "bone_met", assay = "RNA", meta.data = metadata, min.cells = 0, min.features = 0)
+saveRDS(sobj, "./../local/SeuratObject.rds")
+```
+
+
+## Performe cell-cell communication inference
+
+```{r}
+sobj <- readRDS("./../local/SeuratObject.rds")
+
+## reduce to specific comparison
+
+a <- metadata %>% dplyr::filter((Type == "HB" | Type == "LAPC9")) %>% dplyr::filter((is.na(treatment) | treatment == "VEH")) %>% dplyr::filter((is.na(Timecourse) | Timecourse == "0"))
+
+sobj_specific <- 
+
+
+used_tools <- c("connectome", "logfc", "natmi", "sca", "cellphonedb", "cytotalk",
+                    "call_cellchat", "call_italk")
+
+liana_results <- liana_wrap(object, method = used_tools)
+   
+   
+
+```

@@ -9,7 +9,7 @@ if(FALSE){
 P <- "/media/triller/TOSHIBA\ EXT/Data/RNAseq/nonunion/"
 
 bone_metadata <- read.table("./local/bone_metadata.tsv", sep = "\t", header = TRUE)
-## only HB samples from 2D
+## only from 2D
 bone_metadata <- bone_metadata %>% dplyr::filter(Condition == "2D")
 
 
@@ -26,7 +26,11 @@ names(fs) <- samples
 tx2gene <- read.table(paste0(P, "GS_rnaInput_", samples_read_in[1] , ".csv", "/star_salmon/salmon_tx2gene.tsv"))
 tx_data <- tximport(fs, type = "salmon", tx2gene = tx2gene, countsFromAbundance = "lengthScaledTPM")
 saveRDS(tx_data,"./local/bone_tximport_lengthScaledTPM.rds")
-write.table(tx_data[["abundance"]], "./local/bone_tximport_lengthScaledTPM.tsv", quote = TRUE, sep = "\t", col.names = TRUE, row.names = TRUE )
+counts <- tx_data[["abundance"]]
+counts <- counts %>% as.data.frame() %>% tibble::rownames_to_column("gene")
+write.table(counts, "./local/bone_tximport_lengthScaledTPM.tsv", quote = TRUE, sep = "\t", col.names = TRUE, row.names = FALSE )
+
+
 }
 
 #### prostate cancer data (rapalink) ###########################################
@@ -43,5 +47,7 @@ names(fs) <- samples
 tx2gene <- read.table(paste0(P, "GS_", samples[1] , "/star_salmon/salmon_tx2gene.tsv"))
 tx_data <- tximport(fs, type = "salmon", tx2gene = tx2gene, countsFromAbundance = "lengthScaledTPM")
 saveRDS(tx_data,"./local/rapalink_tximport_lengthScaledTPM.rds")
-write.table(tx_data[["abundance"]], "./local/rapalink_tximport_lengthScaledTPM.tsv", quote = TRUE, sep = "\t", col.names = TRUE, row.names = TRUE )
+counts <- tx_data[["abundance"]]
+counts <- counts %>% as.data.frame() %>% tibble::rownames_to_column("gene")
+write.table(counts, "./local/rapalink_tximport_lengthScaledTPM.tsv", quote = TRUE, sep = "\t", col.names = TRUE, row.names = FALSE )
 }
