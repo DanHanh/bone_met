@@ -25,29 +25,31 @@ library(liana)
 
 
 ```{r, include=FALSE}
+if(FALSE){
+  bone_metadata <- read.table("./../local/bone_metadata.tsv", sep = "\t", header = TRUE)
+  
+  ## only from 2D
+  #bone_metadata <- bone_metadata %>% dplyr::filter(Condition == "2D")
+  bone_counts <- read_delim(file =  "./../local/bone_tximport_lengthScaledTPM.tsv", delim = "\t", col_names = TRUE) #%>% tibble::column_to_rownames("gene")
+  
+  rapalink_metadata <- read.table("./../local/rapalink_metadata.txt", sep = "\t", header = TRUE)
+  rapalink_counts <- read_delim(file =  "./../local/rapalink_tximport_lengthScaledTPM.tsv", delim = "\t", col_names = TRUE)# %>% tibble::column_to_rownames("gene")
+  
+  
+  ## combine count tables, (in that case no NA produced!)
+  counts <- bone_counts %>% full_join(rapalink_counts, by = "gene") %>% column_to_rownames("gene")
+  
+  ## unify metadata
+  m_1 <- bone_metadata %>% dplyr::filter(Condition == "2D")%>% dplyr::rename(sample = GS_Code) %>% dplyr::select("sample", "Timecourse", "Type", "Batch" ) %>% mutate(treatment = NA)  %>% mutate(dataset = "bone", Condition = NA)
+  m_2 <- rapalink_metadata %>% dplyr::rename(sample = GenomeScanID, treatment = Treatment, Type = Model) %>% mutate(Timecourse = NA, Batch = NA) %>% dplyr::select("sample", "Timecourse", "Type", "Batch", "treatment" , "Condition") %>% mutate(dataset = "rapalink")
+  
+  metadata <- rbind(m_1, m_2)
+  # reorder metadata based on count matrix
+  
+  metadata <- metadata[match(metadata$sample, colnames(counts)),]
+  rownames(metadata) <- metadata$sample
 
-bone_metadata <- read.table("./../local/bone_metadata.tsv", sep = "\t", header = TRUE)
-
-## only from 2D
-#bone_metadata <- bone_metadata %>% dplyr::filter(Condition == "2D")
-bone_counts <- read_delim(file =  "./../local/bone_tximport_lengthScaledTPM.tsv", delim = "\t", col_names = TRUE) #%>% tibble::column_to_rownames("gene")
-
-rapalink_metadata <- read.table("./../local/rapalink_metadata.txt", sep = "\t", header = TRUE)
-rapalink_counts <- read_delim(file =  "./../local/rapalink_tximport_lengthScaledTPM.tsv", delim = "\t", col_names = TRUE)# %>% tibble::column_to_rownames("gene")
-
-
-## combine count tables, (in that case no NA produced!)
-counts <- bone_counts %>% full_join(rapalink_counts, by = "gene") %>% column_to_rownames("gene")
-
-## unify metadata
-m_1 <- bone_metadata %>% dplyr::filter(Condition == "2D")%>% dplyr::rename(sample = GS_Code) %>% dplyr::select("sample", "Timecourse", "Type", "Batch" ) %>% mutate(treatment = NA)  %>% mutate(dataset = "bone", Condition = NA)
-m_2 <- rapalink_metadata %>% dplyr::rename(sample = GenomeScanID, treatment = Treatment, Type = Model) %>% mutate(Timecourse = NA, Batch = NA) %>% dplyr::select("sample", "Timecourse", "Type", "Batch", "treatment" , "Condition") %>% mutate(dataset = "rapalink")
-
-metadata <- rbind(m_1, m_2)
-# reorder metadata based on count matrix
-
-metadata <- metadata[match(metadata$sample, colnames(counts)),]
-rownames(metadata) <- metadata$sample
+}
 
 ```
 
@@ -58,32 +60,360 @@ rownames(metadata) <- metadata$sample
 #saveRDS(sobj, "./../local/SeuratObject.rds")
 ```
 
-
-## Performe cell-cell communication inference
+## visualize data / structure
 
 ```{r}
 sobj <- readRDS("./../local/SeuratObject.rds")
 
-## reduce to specific comparison
-#LAPC9: untreated (VEH), Condition (intact)
-selected_samples <- metadata %>% dplyr::filter((Type == "HB" | Type == "LAPC9")) %>%
+a <- sobj %>%  FindVariableFeatures() %>% ScaleData() %>% RunPCA() %>% RunUMAP(dims = 1:30)
+
+DimPlot(a, group.by = "dataset")
+DimPlot(a, group.by = "Timecourse")
+DimPlot(a, group.by = "Type")
+
+## Bone separates by Batch
+bone <- subset(sobj, dataset == "bone")
+bone <- bone %>%  FindVariableFeatures() %>% ScaleData() %>% RunPCA(npcs = 40) %>% RunUMAP(dims = 1:30)
+DimPlot(bone, group.by = "dataset")
+DimPlot(bone, group.by = "Timecourse")
+DimPlot(bone, group.by = "Batch")
+
+
+## rapalink separates by TYPE (BM18 vs LAPC9)
+rapalink <- subset(sobj, dataset == "rapalink")
+rapalink <- rapalink %>%  FindVariableFeatures() %>% ScaleData() %>% RunPCA(npcs = 35) %>% RunUMAP(dims = 1:30)
+DimPlot(rapalink, group.by = "Condition")
+DimPlot(rapalink, group.by = "treatment")
+DimPlot(rapalink, group.by = "Type")
+
+
+rm(a, bone, rapalink)
+```
+
+## Performe cell-cell communication inference
+
+### HB vs LAPC9 intact
+
+```{r}
+
+get_communication <- function(object, type = "HB", time = 0){
+  
+  selected_samples <- object@meta.data %>% dplyr::filter((Type == type | Type == "LAPC9")) %>%
   dplyr::filter((is.na(treatment) | treatment == "VEH")) %>%
-  dplyr::filter((is.na(Timecourse) | Timecourse == "0")) %>%
+  dplyr::filter((is.na(Timecourse) | Timecourse == time)) %>%
+  dplyr::filter((is.na(Condition) | Condition == "Intact"))
+
+  sobj_specific <- object[,colnames(object) %in% selected_samples$sample]
+  
+  sobj_specific <- SetIdent(sobj_specific, value = sobj_specific@meta.data$Type )
+  
+  used_tools <- c("connectome", "logfc", "natmi", "sca", "cellphonedb", "cytotalk",
+                      "call_cellchat")
+  # "call_italk"
+  liana_results <- liana_wrap(sobj_specific, method = used_tools, base = NaN)
+  
+  
+  
+    TF <-  sapply(liana_results, function(x){all(c("source", "target") %in% names(x))})
+    ## aggregate methods. aggregated by a re-implementation of the RRA method from
+    ## RobustRankAggreg. Values can be interpreted as p-values
+    liana_results_single_score <- liana_results[TF] %>% liana_aggregate()
+    
+    p.adj <- liana_results_single_score$aggregate_rank * length(names(liana_results))
+    p.adj <- p.adjust(p.adj, "BH")
+    liana_results_single_score$p.adj <- p.adj
+
+  return(list(single_score = liana_results_single_score, all_scores = liana_results))
+}
+
+```
+
+
+
+```{r}
+if(FALSE){
+sobj <- readRDS("./../local/SeuratObject.rds")
+
+res <- list()
+
+res[["0"]] <- get_communication(sobj, type = "HB", time = 0)
+res[["7"]] <- get_communication(sobj, type = "HB", time = 7)
+res[["14"]] <- get_communication(sobj, type = "HB", time = 14)
+res[["21"]] <- get_communication(sobj, type = "HB", time = 21)
+#res[["28"]] <- get_communication(sobj, type = "HB", time = 28)
+
+saveRDS(res, "./../local/cc_res_HB_LAPC9.rds")
+}
+
+```
+
+### Evaluate HB_LAPC9 res
+
+```{r}
+sobj <- readRDS("./../local/SeuratObject.rds")
+
+res <- readRDS("./../local/cc_res_HB_LAPC9.rds")
+res[["28"]] <- NULL
+
+res_single_score <- do.call(rbind, lapply(names(res), function(x){
+  print(x)
+  r <- res[[x]][[1]]
+
+  r <- r %>% mutate(time = x) %>% dplyr::select("source", "target", "ligand", "receptor", "aggregate_rank", "p.adj", "mean_rank", "time")
+  r
+}))
+
+res_single_score$time <- as.numeric(res_single_score$time)
+
+## remove autocrine signals
+
+res_paracrine <- res_single_score[res_single_score$source != res_single_score$target,]
+res_paracrine$signal <- paste0(res_paracrine$ligand,"_", res_paracrine$receptor)
+
+
+
+```
+
+
+We see that the number of predicted paracrine interactions seems to be the highest after 21 days.
+
+```{r}
+## Paractine summary
+
+DF <- res_paracrine %>% group_by(time) %>% dplyr::filter(aggregate_rank < 0.05) %>%summarize(n=n())
+
+
+print("HB_LAPC9 Paracrine signaling summary")
+DF
+```
+
+
+When we look at the p_value distribution we do not see a very low number of p-values in the range of 0-0.05, which most likely mean that they are "false positives". We anyway can examine them
+
+```{r}
+#### all values
+
+res_single_score$time <- factor(res_single_score$time, levels = sort(unique(res_single_score$time)))
+
+ggplot(res_single_score, aes(aggregate_rank, fill = time)) + 
+  geom_histogram(breaks = seq(0,1,0.05), color = "black") +
+  theme_bw(base_size = 12) +
+  scale_y_continuous(expand = expansion(c(0, 0.05))) +
+  facet_wrap(vars(time), ncol = 2) + ggtitle("aggregation scores histogram")
+
+#### only paracrine signaling
+
+res_paracrine$time <- factor(res_paracrine$time, levels = sort(unique(res_single_score$time)))
+
+ggplot(res_paracrine, aes(aggregate_rank, fill = time)) + 
+  geom_histogram(breaks = seq(0,1,0.05), color = "black") +
+  theme_bw(base_size = 12) +
+  scale_y_continuous(expand = expansion(c(0, 0.05))) +
+  facet_wrap(vars(time), ncol = 2) + ggtitle("aggregation scores histogram (paracrine)")
+
+
+```
+
+
+### Venn Diagram between timepoints (all LR pairs)
+
+```{r}
+
+res_paracrine$ID <- paste0(res_paracrine$source,"_",res_paracrine$target,"_",res_paracrine$ligand,"_", res_paracrine$receptor)
+
+venn_list <- list() 
+for(t in unique(res_paracrine$time)){
+  venn_list[[t]] <- res_paracrine %>% filter(aggregate_rank < 0.05) %>% filter(time == t) %>%  arrange(aggregate_rank)  %>% pull(ID)
+}
+
+library("ggVennDiagram")
+p <- ggVennDiagram(venn_list)
+p
+
+res_paracrine_in_all_timepoints <- res_paracrine %>% filter(ID %in%  Reduce(intersect, venn_list))
+DT::datatable(res_paracrine_in_all_timepoints)
+#Reduce(intersect, venn_list)
+
+```
+
+
+### aggregate ranks over time points
+
+```{r}
+res_single_score$ID <- paste0(res_single_score$source,"_",res_single_score$target,"_",res_single_score$ligand,"_", res_single_score$receptor)
+ranked_list <- list()
+for(t in unique(res_single_score$time)){
+  ranked_list[[t]] <- res_single_score %>% filter(time == t) %>%  arrange(aggregate_rank)  %>% pull(ID)
+}
+
+library(RobustRankAggreg)
+res_single_score_RRA <- aggregateRanks(ranked_list, method = "RRA") %>% rename(ID = Name) %>% right_join(res_single_score, by = "ID", multiple = "all")
+
+
+res_single_score_RRA_paracine <- res_single_score_RRA[res_single_score_RRA$source != res_single_score_RRA$target,]
+
+DT::datatable(res_single_score_RRA)
+
+
+################################################################################
+## only secreted, membrane bound
+
+HPA <- read.table("./../local/proteinatlas_8d579e31.tsv", sep = "\t", header = TRUE, quote = "\"")
+
+HPA_sub <- HPA %>% dplyr::select("Gene", "Subcellular.location", "Secretome.location")
+
+## selct interesting secretion locations: (for ligand select if secreted or at least membrane bound)
+unique(HPA_sub$Secretome.location)
+TF_1 <- grepl( "Secreted", HPA_sub$Secretome.location)
+TF_2 <- grepl( "Immunoglobulin genes", HPA_sub$Secretome.location)
+TF_3 <- grepl( "Intracellular and membrane", HPA_sub$Secretome.location)
+TF <- (TF_1 | TF_2 | TF_3)
+secreted_genes <- HPA_sub %>% filter(TF) %>% pull("Gene")
+rm(TF,TF_1, TF_2, TF_3)
+## for receptor use only the onces located at the plasma membrane
+#unique(unlist(strsplit(HPA_sub$Subcellular.location, split = ",")))
+## only choose the onces locataed at plasma membrane. The other terms are not applicable
+TF <- grepl("Plasma membrane", HPA_sub$Subcellular.location)
+table(TF)
+plasma_membrane_genes <- HPA_sub %>% filter(TF) %>% pull("Gene")
+rm(TF)
+
+## subset results to only contain receptor at plasma membrane and ligand that are secreted or at the plasma membrane
+TF <- (res_single_score_RRA_paracine$ligand %in% secreted_genes  & res_single_score_RRA_paracine$receptor %in% plasma_membrane_genes)
+table(TF)
+
+res <- res_single_score_RRA_paracine %>% filter(TF)
+
+
+df <- DT::datatable(res)
+df
+
+
+
+DF <- res
+## select only HB and LAPC9 for expression table
+selected_samples <- sobj@meta.data %>% dplyr::filter((Type == "HB" | Type == "LAPC9")) %>%
+  dplyr::filter((is.na(treatment) | treatment == "VEH")) %>%
   dplyr::filter((is.na(Condition) | Condition == "Intact"))
 
 sobj_specific <- sobj[,colnames(sobj) %in% selected_samples$sample]
+sobj_specific$Type_Timecourse <- paste0(sobj_specific$Type, "_", sobj_specific$Timecourse)
 
-sobj_specific <- SetIdent(sobj_specific, value = sobj_specific@meta.data$Type )
-
-used_tools <- c("connectome", "logfc", "natmi", "sca", "cellphonedb", "cytotalk",
-                    "call_cellchat", "call_italk")
-
-liana_results <- liana_wrap(sobj_specific, method = used_tools)
-
-liana_results <- liana_wrap(sobj_specific, method = c( "logfc"))
-   
-   
+features <- res %>% arrange(Score) %>% mutate(signal = paste0(ligand,"_",receptor)) %>% pull(signal) %>% unique() %>% strsplit("_") %>% unlist(recursive = TRUE)
 
 
+
+expr <- AverageExpression(sobj_specific, features = features, group.by = c("Type_Timecourse"), slot = "counts")$RNA %>% as.data.frame() %>%rownames_to_column("gene")
+
+## expression table
+DT::datatable(expr)
+
+# ## merge with expression with res
+# ligand_expr <- expr
+# names(ligand_expr) <- paste0("ligandExpr_", names(ligand_expr))
+# names(ligand_expr)[1] <- "ligand" 
+# res <- res %>% left_join(ligand_expr, by = "ligand")
+# 
+# receptor_expr <- expr
+# names(receptor_expr) <- paste0("receptorExpr_", names(receptor_expr))
+# names(receptor_expr)[1] <- "receptor" 
+# res <- res %>% left_join(receptor_expr, by = "receptor")
+
+
+## create and save top 10 list:
+
+res_top20 <- res %>% dplyr::select("source", "target", "ligand", "receptor", "Score") %>% distinct() %>% head(n = 20)
+library(webshot)
+library(htmlwidgets)
+df <- DT::datatable(res_top20)
+saveWidget(df, "./../local/top20_LAPC9_HB_RRA_over_time_secreted_plasma_membrane_only.html")
+
+```
+
+### Venn Diagram between timepoints (all LR pairs)
+
+```{r}
+
+venn_list <- list() 
+for(t in unique(res$time)){
+  venn_list[[t]] <- res %>% filter(aggregate_rank < 0.05) %>% filter(time == t) %>%  arrange(aggregate_rank)  %>% pull(ID)
+}
+
+library("ggVennDiagram")
+p <- ggVennDiagram(venn_list) + ggtitle("Paracrine communication (membrane bound, secreted)")
+p
+
+ggsave("./../local/venn_diagram_HB_LAPC9_membrane_secreted.pdf")
+#res_paracrine_in_all_timepoints <- res_paracrine %>% filter(ID %in%  Reduce(intersect, venn_list))
+#DT::datatable(res_paracrine_in_all_timepoints)
+#Reduce(intersect, venn_list)
+
+```
+
+
+
+
+
+### Investigate with only cellchat (in progress)
+
+```{r}
+run_cellchat <- function(object, type = "HB", time = 0){
+   library(CellChat)
+  
+  selected_samples <- object@meta.data %>% dplyr::filter((Type == type | Type == "LAPC9")) %>%
+  dplyr::filter((is.na(treatment) | treatment == "VEH")) %>%
+  dplyr::filter((is.na(Timecourse) | Timecourse == time)) %>%
+  dplyr::filter((is.na(Condition) | Condition == "Intact"))
+
+  sobj_specific <- object[,colnames(object) %in% selected_samples$sample]
+ 
+  cc <- createCellChat(sobj_specific)
+  cc <- setIdent(cc, ident.use = "Type")
+  
+  levels(cc@idents)
+  as.numeric(table(cc@idents))
+  
+  CellChatDB <- CellChatDB.human
+  cc@DB <- CellChatDB
+  cc <- subsetData(cc)
+  
+  cc <- identifyOverExpressedGenes(cc)
+  cc <- identifyOverExpressedInteractions(cc)
+  
+  cc <- computeCommunProb(cc)
+  cc <- filterCommunication(cc, min.cells = 0)
+  
+  df.net <- subsetCommunication(cc)
+  return(df.net)
+}
+
+
+
+
+```
+
+```{r}
+if(FALSE){
+  sobj <- readRDS("./../local/SeuratObject.rds")
+  object <- sobj  
+  
+  res_cellchat <- list()
+  
+  res_cellchat[["0"]] <- run_cellchat(sobj, type = "HB", time = 0)
+  res_cellchat[["7"]] <- run_cellchat(sobj, type = "HB", time = 7)
+  res_cellchat[["14"]] <- run_cellchat(sobj, type = "HB", time = 14)
+  res_cellchat[["21"]] <- run_cellchat(sobj, type = "HB", time = 21)
+  #res[["28"]] <- get_communication(sobj, type = "HB", time = 28)
+  
+  saveRDS(res_cellchat, "./../local/res_cellchat_HB_LAPC9.rds")
+}
+```
+
+```{r}
+res_cellchat <- readRDS("./../local/res_cellchat_HB_LAPC9.rds")
+
+a <- do.call(rbind, res_cellchat)
+
+res_cellchat_paracrine <- res_cellchat[res_cellchat$source != res_cellchat$target,]
 
 ```
